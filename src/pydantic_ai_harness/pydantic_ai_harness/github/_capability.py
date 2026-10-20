@@ -46,12 +46,17 @@ class GitHub(AbstractCapability[AgentDepsT]):
     """
     read_only: bool = False
     """Offer only the tools the server marks as read-only. The hosted connection also asks for GitHub's read-only mode."""
+    lockdown: bool = False
+    """Ask GitHub to hide issue and pull request content in public repositories when its author has no push access.
+
+    GitHub describes this as a best-effort content filter, not a security boundary.
+    """
     include_instructions: bool = True
     """Forward the server's instructions to the agent."""
     client: MCPToolsetClient | None = field(default=None, repr=False)
     """Your own MCP client or transport, for full control of the connection.
 
-    It cannot be combined with `auth`, `url`, or `toolsets`.
+    It cannot be combined with `auth`, `url`, `toolsets`, or `lockdown`.
     """
     url: str = GITHUB_MCP_URL
     """The `https://` MCP server URL, for example a GitHub Enterprise Cloud endpoint."""
@@ -62,9 +67,11 @@ class GitHub(AbstractCapability[AgentDepsT]):
         # The toolset always needs an id, so normalize here and let `combine` see the id the toolset uses.
         self.id = self.id or _ID
         if self.client is not None and (
-            self.auth is not None or self.url != GITHUB_MCP_URL or self.toolsets is not None
+            self.auth is not None or self.url != GITHUB_MCP_URL or self.toolsets is not None or self.lockdown
         ):
-            raise UserError('`client` owns the connection, so it cannot be combined with `auth`, `url`, or `toolsets`.')
+            raise UserError(
+                '`client` owns the connection, so it cannot be combined with `auth`, `url`, `toolsets`, or `lockdown`.'
+            )
         parts = urlsplit(self.url)
         if parts.scheme != 'https' or not parts.hostname:
             # The token travels in a header, so a plain `http://` URL would send it unencrypted.
@@ -117,6 +124,8 @@ class GitHub(AbstractCapability[AgentDepsT]):
                 "GitHub needs a token, not 'oauth': GitHub does not support automatic OAuth client registration."
             )
         headers = {'X-MCP-Readonly': 'true'} if self.read_only else {}
+        if self.lockdown:
+            headers['X-MCP-Lockdown'] = 'true'
         if self.toolsets is not None:
             headers['X-MCP-Toolsets'] = ','.join(self.toolsets)
         return MCPToolset(
