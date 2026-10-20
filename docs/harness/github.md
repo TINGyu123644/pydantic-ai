@@ -95,14 +95,14 @@ With durable execution such as Temporal, read the credential from the run's deps
 
 - `toolsets=['repos', 'issues', 'actions']` picks which of GitHub's tool groups the server offers. Leave it unset to get the server's default groups.
 - `read_only=True` asks the server for its read-only mode, and also drops any tool the server does not mark as read-only. If none are marked, the agent gets no GitHub tools and emits an `MCPReadOnlyNoToolsWarning`.
-- `lockdown=True` asks GitHub to hide issue and pull request content in public repositories when its author has no push access. GitHub describes it as a best-effort content filter, not a security boundary.
+- `lockdown=True` asks GitHub to withhold issue, pull request, and comment content in public repositories written by users without push access; some tools return an error instead. GitHub describes it as a best-effort content filter, not a security boundary: other tools can still return that content.
 - `url` sets a GitHub Enterprise Cloud endpoint. It must be an `https://` URL.
 
 The capability does not limit which repositories the agent can reach. Set that with the token's or GitHub App's permissions. To send other headers, or to use custom authentication, pass a configured `client`.
 
 ## Untrusted content
 
-Tool results include text written by anyone who can open an issue, pull request, or comment in a repository the token can read. That text can contain instructions aimed at the agent. With a token that reads private repositories and writes to public ones, such instructions can lead the agent to copy private content into a public issue or pull request. Use `read_only=True`, `lockdown=True`, a token limited to the repositories the task needs, approval for write tools (below), or [Prompt Injection Defender](prompt-injection-defender.md).
+Tool results include text written by anyone who can open an issue, pull request, or comment in a repository the token can read. That text can contain instructions aimed at the agent. With a token that reads private repositories and writes to public ones, such instructions can lead the agent to copy private content into a public issue or pull request. Use `read_only=True`, `lockdown=True` (best-effort), a token limited to the repositories the task needs, approval for write tools (below), or [Prompt Injection Defender](prompt-injection-defender.md).
 
 ## Tool selection and approval
 
