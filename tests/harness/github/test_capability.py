@@ -205,10 +205,10 @@ class TestGitHub:
         with pytest.raises(UserError, match='Set `GITHUB_TOKEN`'):
             Agent(TestModel(), capabilities=[GitHub()])
 
-    @pytest.mark.parametrize('source', ['auth', 'environment'])
-    def test_oauth_token_raises(self, source: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize('auth', ['oauth', None], ids=['auth', 'environment'])
+    def test_oauth_token_raises(self, auth: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('GITHUB_TOKEN', 'oauth')
-        capability = GitHub[str | None](auth='oauth' if source == 'auth' else None)
+        capability = GitHub[str | None](auth=auth)
         with pytest.raises(UserError, match="GitHub needs a token, not 'oauth'"):
             capability.get_toolset()
 
@@ -279,7 +279,7 @@ class TestPerRunAuth:
         with pytest.raises(UserError, match="must return an API key or token, not 'oauth'"):
             await connections_for(capability, 'oauth')
 
-    async def test_read_only_applies_per_run(self) -> None:
+    async def test_server_settings_apply_per_run(self) -> None:
         capability = GitHub[str | None](auth=per_user_token, read_only=True, lockdown=True, toolsets=['repos'])
         [connection] = await connections_for(capability, 'alice-token')
         assert transport(connection).headers == {
