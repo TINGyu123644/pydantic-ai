@@ -6,6 +6,7 @@ import re
 import threading
 import uuid
 import warnings
+from base64 import b64encode
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
@@ -18,6 +19,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -35,6 +37,7 @@ from pydantic_ai import (
     AgentRunResult,
     AgentRunResultEvent,
     AgentStreamEvent,
+    BinaryContent,
     CapabilityEvent,
     CapabilityInstructionSource,
     CapabilityLoadDeltaPart,
@@ -70,7 +73,6 @@ from pydantic_ai.capabilities import (
     MCP,
     AbstractCapability,
     BatchModelRequests,
-    BinaryContent,
     Capability,
     DynamicCapability,
     Hooks,
@@ -2319,6 +2321,78 @@ def test_cache_policy_encodes_binary_content_by_value():
 
     assert key_for(shared) == key_for(deserialized)
     assert key_for(shared) != key_for(BinaryContent(data=b'\xfe\xff', media_type='image/png'))
+
+
+def test_cache_policy_does_not_replay_a_binary_result_for_a_plain_str():
+    """A `str` equal to a binary value's base64 must not share the binary value's key.
+
+    The binary encoding is a `str` value too, so a plain string that happens to look like the
+    encoding of some bytes must stay in the string domain and not replay that binary value's
+    cached result.
+    """
+    cache_policy = PrefectAgentInputs()
+    mock_task_ctx = MagicMock()
+
+    def key_for(payload: Any) -> str | None:
+        return cache_policy.compute_key(task_ctx=mock_task_ctx, inputs={'data': payload}, flow_parameters={})
+
+    binary = b'Abc'
+    assert key_for(binary) != key_for(b64encode(binary).decode('ascii'))
+
+
+def test_cache_policy_keeps_user_dicts_out_of_the_binary_domain():
+    """A dictionary shaped like the binary marker must not replay a binary value's result.
+
+    The marker is a dictionary, so a user payload could otherwise carry the marker's shape as
+    ordinary data and collide with a binary value's projected payload. Every user dict — under
+    either the current or the retired marker key — is keyed apart from binary values.
+    """
+    cache_policy = PrefectAgentInputs()
+    mock_task_ctx = MagicMock()
+
+    def key_for(payload: Any) -> str | None:
+        return cache_policy.compute_key(task_ctx=mock_task_ctx, inputs={'data': payload}, flow_parameters={})
+
+    binary = b'Abc'
+    # The retired v1 marker shape, as the review's original collision path used.
+    assert key_for({'__bytes_b64__': 'QWJj'}) != key_for(binary)
+    # The current marker's exact shape.
+    assert key_for(
+        {
+            '__pyai_binary_v1__': {
+                'len': 3,
+                'sha256': sha256(binary).hexdigest(),
+                'b64': 'QWJj',
+            }
+        }
+    ) != key_for(binary)
+    # The projection's own dict wrapper shape.
+    assert key_for({'__pyai_dict_v1__': {'b64': 'QWJj'}}) != key_for(binary)
+
+
+def test_cache_policy_forks_the_key_on_different_binary_values():
+    """Two different binary values must not share a cache entry, even at the same length."""
+    cache_policy = PrefectAgentInputs()
+    mock_task_ctx = MagicMock()
+
+    def key_for(payload: Any) -> str | None:
+        return cache_policy.compute_key(task_ctx=mock_task_ctx, inputs={'data': payload}, flow_parameters={})
+
+    assert key_for(b'\xff\xfe') != key_for(b'\xfe\xff')
+    assert key_for({'blob': b'\xff\xfe'}) != key_for({'blob': b'\xfe\xff'})
+
+
+def test_cache_policy_keys_equal_binary_values_alike():
+    """Value addressing is preserved: equal content hashes equally, whatever holds or shares it."""
+    cache_policy = PrefectAgentInputs()
+    mock_task_ctx = MagicMock()
+
+    def key_for(payload: Any) -> str | None:
+        return cache_policy.compute_key(task_ctx=mock_task_ctx, inputs={'data': payload}, flow_parameters={})
+
+    assert key_for(b'\xff\xfe') == key_for(bytearray(b'\xff\xfe'))
+    # Equal values sharing no objects, as a deserialized retry history does.
+    assert key_for({'a': b'\xff\xfe', 'b': b'\xff\xfe'}) == key_for({'a': b'\xff\xfe', 'b': b'\xff\xfe'})
 
 
 def test_dynamic_tool_cache_identity_includes_prepared_definition() -> None:

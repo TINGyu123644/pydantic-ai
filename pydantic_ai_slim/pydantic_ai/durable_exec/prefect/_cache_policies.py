@@ -1,6 +1,7 @@
 from base64 import b64encode
 from collections.abc import Callable
 from dataclasses import fields, is_dataclass
+from hashlib import sha256
 from typing import Any, TypeGuard
 
 from prefect.cache_policies import INPUTS, RUN_ID, TASK_SOURCE, CachePolicy
@@ -14,16 +15,26 @@ from pydantic_ai.tools import RunContext, ToolDefinition
 
 _NON_SERIALIZABLE = '<non-serializable>'
 
-_BYTES_KEY = '__bytes_b64__'
-"""Marker key for binary values in a cache-key payload, value-addressed as base64."""
+_BINARY_V1_KEY = '__pyai_binary_v1__'
+"""Wrapper key for binary values in a cache-key payload, value-addressed by content digest."""
+
+_DICT_V1_KEY = '__pyai_dict_v1__'
+"""Wrapper key that moves every projected dictionary into the dict domain, away from `_BINARY_V1_KEY`."""
 
 
-def _bytes_to_b64(value: bytes | bytearray) -> dict[str, str]:
-    return {_BYTES_KEY: b64encode(value).decode('ascii')}
+def _bytes_to_marker(value: bytes | bytearray) -> dict[str, Any]:
+    data = bytes(value)
+    return {
+        _BINARY_V1_KEY: {
+            'len': len(data),
+            'sha256': sha256(data).hexdigest(),
+            'b64': b64encode(data).decode('ascii'),
+        }
+    }
 
 
 def _replace_binary_content(value: Any) -> Any:
-    """Replace `bytes` and `bytearray` with a value-addressed base64 marker.
+    """Replace `bytes` and `bytearray` with a value-addressed marker, keyed apart from user dicts.
 
     `hash_objects` tries Prefect's JSON serializer first, but that encoder cannot emit a raw
     `bytes` (a non-UTF-8 one dies decoding it), so any payload that holds one falls through to
@@ -37,11 +48,19 @@ def _replace_binary_content(value: Any) -> Any:
     Base64-encoding the bytes walks the payload back onto the JSON path, where the digest is
     value-addressed: equal bytes hash equally however the objects are shared, and different
     bytes still fork the key. Recurses through the containers a projected payload nests them in.
+
+    The encoding is domain-separated, so distinct logical inputs can never project to the same
+    payload. Binary values are wrapped under `_BINARY_V1_KEY` with their length, SHA-256 digest
+    and base64 content; every dictionary — including one a user shaped to resemble the marker —
+    is wrapped under `_DICT_V1_KEY`. A wrapper is a dict and a scalar (a `str` key or value) can
+    never equal one, so a user dict keyed like the marker stays in the dict domain and cannot
+    replay a binary value's result, and the length+digest double-check keeps two different byte
+    strings from sharing a marker.
     """
     if isinstance(value, bytes | bytearray):
-        return _bytes_to_b64(value)
+        return _bytes_to_marker(value)
     if _is_dict(value):
-        return {key: _replace_binary_content(item) for key, item in value.items()}
+        return {_DICT_V1_KEY: {key: _replace_binary_content(item) for key, item in value.items()}}
     if _is_list(value):
         return [_replace_binary_content(item) for item in value]
     if _is_tuple(value):
